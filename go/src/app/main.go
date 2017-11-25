@@ -70,10 +70,20 @@ func initDB() {
 	log.Printf("Succeeded to connect db.")
 }
 
+func resetRedis() {
+	err := roomDataTimeStore.Del("*").Err()
+	if (err != nil) {
+		panic(err)
+	}
+}
+
 func getInitializeHandler(w http.ResponseWriter, r *http.Request) {
 	db.MustExec("TRUNCATE TABLE adding")
 	db.MustExec("TRUNCATE TABLE buying")
 	db.MustExec("TRUNCATE TABLE room_time")
+
+	resetRedis()
+
 	w.WriteHeader(204)
 }
 
