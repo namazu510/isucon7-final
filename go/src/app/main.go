@@ -9,6 +9,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/go-redis/redis"
+	"sync"
+
 	"crypto/sha256"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
@@ -18,6 +21,9 @@ import (
 
 var (
 	db *sqlx.DB
+
+	roomDataTimeStore *redis.Client
+	roomTimeLock      sync.Mutex
 
 	serverIPs = []string{
 		"163.43.29.7",
@@ -108,6 +114,15 @@ func wsGameHandler(w http.ResponseWriter, r *http.Request) {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	initDB()
+
+	// init redis
+	roomDataTimeStore = redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "",
+		DB:       0,
+	})
+	pong, err := roomDataTimeStore.Ping().Result()
+	fmt.Println(pong, err)
 
 	r := mux.NewRouter()
 	r.HandleFunc("/initialize", getInitializeHandler)
