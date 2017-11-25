@@ -214,7 +214,7 @@ func updateRoomTime(tx *sqlx.Tx, roomName string, reqTime int64) (int64, bool) {
 	}
 	if reqTime != 0 {
 		if reqTime < currentTime {
-			log.Println("reqTime is past")
+			log.Println("reqTime is past: reqTime=", reqTime, " currentTime=", currentTime)
 			return 0, false
 		}
 	}
@@ -240,7 +240,9 @@ func addIsu(roomName string, reqIsu *big.Int, reqTime int64) (bool, func()) {
 	tx, err := db.Beginx()
 	if err != nil {
 		log.Println(err)
-		return false, func() {}
+		return false, func() {
+			log.Println("failed: db.Beginx(): " + err.Error())
+		}
 	}
 	// dbのコネクションを食いつぶしそうだから、rollback。
 	// この関数内で呼び出している関数が、txに依存しなくなったら削除してよい。
@@ -249,7 +251,9 @@ func addIsu(roomName string, reqIsu *big.Int, reqTime int64) (bool, func()) {
 	_, ok := updateRoomTime(tx, roomName, reqTime)
 	if !ok {
 		tx.Rollback()
-		return false, func() {}
+		return false, func() {
+			log.Println("failed: updateRoomTime()")
+		}
 	}
 
 	//_, err = tx.Exec("INSERT INTO adding(room_name, time, isu) VALUES (?, ?, '0') ON DUPLICATE KEY UPDATE isu=isu", roomName, reqTime)
@@ -259,9 +263,11 @@ func addIsu(roomName string, reqIsu *big.Int, reqTime int64) (bool, func()) {
 		Isu:      fmt.Sprintf("%d", reqIsu),
 	}
 	stat := AddingStore.Set(getAddingStoreKey(adding), adding, 0)
-	if stat.Err() != nil {
+	if err := stat.Err(); err != nil {
 		log.Println(err)
-		return false, func() {}
+		return false, func() {
+			log.Println("failed: Set(): " + err.Error())
+		}
 	}
 
 	//err = tx.QueryRow("SELECT isu FROM adding WHERE room_name = ? AND time = ? FOR UPDATE", ).Scan(&isuStr)
@@ -270,9 +276,10 @@ func addIsu(roomName string, reqIsu *big.Int, reqTime int64) (bool, func()) {
 		RoomName: roomName,
 		Time:     reqTime,
 	}))
-	if result.Err() != nil {
+	if err := result.Err(); err != nil {
 		log.Println(err)
 		return false, func() {
+			log.Println("failed: Get(): " + err.Error())
 			AddingStore.Del(getAddingStoreKey(adding))
 		}
 	}
@@ -290,14 +297,16 @@ func addIsu(roomName string, reqIsu *big.Int, reqTime int64) (bool, func()) {
 		Isu:      fmt.Sprintf("%d", reqIsu),
 	}
 	result2 := AddingStore.Set(getAddingStoreKey(newIsu), newIsu, 0)
-	if result2.Err() != nil {
+	if err := result2.Err(); err != nil {
 		log.Println(err)
 		return false, func() {
+			log.Println("failed: Set(): " + err.Error())
 			AddingStore.Del(getAddingStoreKey(adding))
 		}
 	}
 
 	return true, func() {
+		log.Println("failed: unknwon")
 		AddingStore.Del(getAddingStoreKey(adding))
 	}
 }
