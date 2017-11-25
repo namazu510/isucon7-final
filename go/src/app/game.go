@@ -371,34 +371,25 @@ func getStatus(roomName string) (*GameStatus, error) {
 	}
 
 	mItems := map[int]mItem{}
-	var items []mItem
-
-	err = tx.Select(&items, "SELECT * FROM m_item")
-	if err != nil {
-		tx.Rollback()
-		return nil, err
-	}
-	for _, item := range items {
-		mItems[item.ItemID] = item
-	}
 
 	// FIX ME なんか配列をcacheできない
-	//// items cache
-	// res, hit := itemCache.Get("items")
-	//if !hit {
-	//	err = tx.Select(&items, "SELECT * FROM m_item")
-	//	if err != nil {
-	//		tx.Rollback()
-	//		return nil, err
-	//	}
-	//	for _, item := range items {
-	//		mItems[item.ItemID] = item
-	//	}
-	//	itemCache.Set("items", &items, cache.DefaultExpiration)
-	//} else {
-	//	fmt.Println("items cach hit")
-	//	items = *(res.(*[]mItem))
-	//}
+	// items cache
+	res, hit := itemCache.Get("items")
+	if !hit {
+		var items []mItem
+		err = tx.Select(&items, "SELECT * FROM m_item")
+		if err != nil {
+			tx.Rollback()
+			return nil, err
+		}
+		for _, item := range items {
+			mItems[item.ItemID] = item
+		}
+		itemCache.Set("items", mItems, cache.DefaultExpiration)
+	} else {
+		fmt.Println("items cach hit")
+		mItems = res.(map[int]mItem)
+	}
 
 	addings := []Adding{}
 	err = tx.Select(&addings, "SELECT time, isu FROM adding WHERE room_name = ?", roomName)
