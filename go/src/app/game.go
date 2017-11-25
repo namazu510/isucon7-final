@@ -166,8 +166,8 @@ func updateRoomTime(tx *sqlx.Tx, roomName string, reqTime int64) (int64, bool, f
 	room := time.Now().UnixNano() / 1000 / 1000
 	current := room
 
-	roomTimeLock.Lock()
-	defer roomTimeLock.Unlock()
+	// roomTimeLock.Lock()
+	// defer roomTimeLock.Unlock()
 	val, err := roomDataTimeStore.Get(roomName).Result()
 	if err == redis.Nil {
 		// OK!
