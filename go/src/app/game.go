@@ -11,6 +11,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/websocket"
 	"github.com/jmoiron/sqlx"
+	"github.com/patrickmn/go-cache"
 )
 
 type GameRequest struct {
@@ -294,7 +295,16 @@ func buyItem(roomName string, itemID int, countBought int, reqTime int64) bool {
 	}
 	for _, b := range buyings {
 		var item mItem
-		tx.Get(&item, "SELECT * FROM m_item WHERE item_id = ?", b.ItemID)
+
+		// item_cache!
+		res, hit := itemCache.Get(strconv.Itoa(b.ItemID))
+		if !hit {
+			tx.Get(&item, "SELECT * FROM m_item WHERE item_id = ?", b.ItemID)
+			itemCache.Set(strconv.Itoa(b.ItemID), &item, cache.DefaultExpiration)
+		} else {
+			item = *(res.(*mItem))
+		}
+
 		cost := new(big.Int).Mul(item.GetPrice(b.Ordinal), big.NewInt(1000))
 		totalMilliIsu.Sub(totalMilliIsu, cost)
 		if b.Time <= reqTime {
@@ -304,7 +314,15 @@ func buyItem(roomName string, itemID int, countBought int, reqTime int64) bool {
 	}
 
 	var item mItem
-	tx.Get(&item, "SELECT * FROM m_item WHERE item_id = ?", itemID)
+	// item_cache!
+	res, hit := itemCache.Get(strconv.Itoa(itemID))
+	if !hit {
+		tx.Get(&item, "SELECT * FROM m_item WHERE item_id = ?", itemID)
+		itemCache.Set(strconv.Itoa(itemID), &item, cache.DefaultExpiration)
+	} else {
+		item = *(res.(*mItem))
+	}
+
 	need := new(big.Int).Mul(item.GetPrice(countBought+1), big.NewInt(1000))
 	if totalMilliIsu.Cmp(need) < 0 {
 		log.Println("not enough")
@@ -341,6 +359,7 @@ func getStatus(roomName string) (*GameStatus, error) {
 
 	mItems := map[int]mItem{}
 	var items []mItem
+
 	err = tx.Select(&items, "SELECT * FROM m_item")
 	if err != nil {
 		tx.Rollback()
@@ -349,6 +368,24 @@ func getStatus(roomName string) (*GameStatus, error) {
 	for _, item := range items {
 		mItems[item.ItemID] = item
 	}
+
+	// FIX ME なんか配列をcacheできない
+	//// items cache
+	// res, hit := itemCache.Get("items")
+	//if !hit {
+	//	err = tx.Select(&items, "SELECT * FROM m_item")
+	//	if err != nil {
+	//		tx.Rollback()
+	//		return nil, err
+	//	}
+	//	for _, item := range items {
+	//		mItems[item.ItemID] = item
+	//	}
+	//	itemCache.Set("items", &items, cache.DefaultExpiration)
+	//} else {
+	//	fmt.Println("items cach hit")
+	//	items = *(res.(*[]mItem))
+	//}
 
 	addings := []Adding{}
 	err = tx.Select(&addings, "SELECT time, isu FROM adding WHERE room_name = ?", roomName)

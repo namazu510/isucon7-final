@@ -1,23 +1,30 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"log"
-	"net/http"
-	"net/url"
-	"os"
-	"time"
-
-	"crypto/sha256"
+	"github.com/go-redis/redis"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 	"github.com/jmoiron/sqlx"
+	"github.com/patrickmn/go-cache"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"sync"
+	"time"
 )
 
 var (
 	db *sqlx.DB
+
+	roomDataTimeStore *redis.Client
+	roomTimeLock      sync.Mutex
+
+	itemCache *cache.Cache
 
 	serverIPs = []string{
 		"163.43.29.7",
@@ -108,6 +115,18 @@ func wsGameHandler(w http.ResponseWriter, r *http.Request) {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	initDB()
+
+	// init redis
+	roomDataTimeStore = redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "",
+		DB:       0,
+	})
+	pong, err := roomDataTimeStore.Ping().Result()
+	fmt.Println(pong, err)
+
+	// init cache
+	itemCache = cache.New(5*time.Minute, 10*time.Minute)
 
 	r := mux.NewRouter()
 	r.HandleFunc("/initialize", getInitializeHandler)
