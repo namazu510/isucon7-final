@@ -149,7 +149,10 @@ func big2exp(n *big.Int) Exponential {
 
 func getCurrentTime() (int64, error) {
 	var currentTime int64
-	currentTime = time.Now().Unix()
+	err := db.Get(&currentTime, "SELECT floor(unix_timestamp(current_timestamp(3))*1000)")
+	if err != nil {
+		return 0, err
+	}
 	return currentTime, nil
 }
 
