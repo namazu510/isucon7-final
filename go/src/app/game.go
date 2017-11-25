@@ -162,7 +162,7 @@ func getCurrentTime() (int64, error) {
 // トランザクション開始後この関数を呼ぶ前にクエリを投げると、
 // そのトランザクション中の通常のSELECTクエリが返す結果がロック取得前の
 // 状態になることに注意 (keyword: MVCC, repeatable read).
-func updateRoomTime(tx *sqlx.Tx, roomName string, reqTime int64) (int64, bool) {
+func updateRoomTime(tx *sqlx.Tx, roomName string, reqTime int64) (int64, bool, func()) {
 	room := time.Now().UnixNano() / 1000
 	current := room
 
@@ -184,33 +184,32 @@ func updateRoomTime(tx *sqlx.Tx, roomName string, reqTime int64) (int64, bool) {
 
 	if room > current {
 		log.Println("room time is future")
-		return 0, false
+		return 0, false, func() {}
 	}
 	if reqTime != 0 {
 		if reqTime < current {
 			log.Println("reqTime is past")
-			return 0, false
+			return 0, false, func() {}
 		}
 	}
 
-	err = roomDataTimeStore.Set(roomName, strconv.FormatInt(current, 10), 0).Err()
-	if err != nil {
+	// トランザクション失敗時に戻せるようにこのターンのroomTimeを保持させる
+	var beforeTime int64
+	result := roomDataTimeStore.GetSet(roomName, strconv.FormatInt(current, 10))
+	if result.Err() != nil {
 		panic(err)
 	}
+	result.Scan(&beforeTime)
 
-	// FIXME: トランザクション失敗時に戻せるようにこのターンのroomTimeを保持させる
-
-	return current, true
-}
-
-func revertRoomTime(roomName string) {
-	// FIXME: 直前のroomTimeが保存されているmapから取る
-	beforeTime := time.Now().UnixNano() / 1000
-
-	err := roomDataTimeStore.Set(roomName, strconv.FormatInt(beforeTime, 10), 0).Err()
-	if err != nil {
-		panic(err)
+	// この関数は、ロールバックされたときに呼び出される。
+	rollbackFunc := func() {
+		err := roomDataTimeStore.Set(roomName, strconv.FormatInt(beforeTime, 10), 0).Err()
+		if err != nil {
+			panic(err)
+		}
 	}
+
+	return current, true, rollbackFunc
 }
 
 func addIsu(roomName string, reqIsu *big.Int, reqTime int64) bool {
@@ -220,9 +219,9 @@ func addIsu(roomName string, reqIsu *big.Int, reqTime int64) bool {
 		return false
 	}
 
-	_, ok := updateRoomTime(tx, roomName, reqTime)
+	_, ok, rollback := updateRoomTime(tx, roomName, reqTime)
 	if !ok {
-		tx.Rollback()
+		rollback()
 		return false
 	}
 
@@ -264,9 +263,9 @@ func buyItem(roomName string, itemID int, countBought int, reqTime int64) bool {
 		return false
 	}
 
-	_, ok := updateRoomTime(tx, roomName, reqTime)
+	_, ok, rollback := updateRoomTime(tx, roomName, reqTime)
 	if !ok {
-		tx.Rollback()
+		rollback()
 		return false
 	}
 
@@ -344,9 +343,9 @@ func getStatus(roomName string) (*GameStatus, error) {
 		return nil, err
 	}
 
-	currentTime, ok := updateRoomTime(tx, roomName, 0)
+	currentTime, ok, rollback := updateRoomTime(tx, roomName, 0)
 	if !ok {
-		tx.Rollback()
+		rollback()
 		return nil, fmt.Errorf("updateRoomTime failure")
 	}
 
