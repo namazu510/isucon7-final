@@ -163,7 +163,6 @@ func getCurrentTime() (int64, error) {
 // そのトランザクション中の通常のSELECTクエリが返す結果がロック取得前の
 // 状態になることに注意 (keyword: MVCC, repeatable read).
 func updateRoomTime(tx *sqlx.Tx, roomName string, reqTime int64) (int64, bool, func()) {
-	room := time.Now().UnixNano() / 1000
 	room := time.Now().UnixNano() / 1000 / 1000
 	current := room
 
