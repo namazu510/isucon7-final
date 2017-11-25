@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -12,11 +13,17 @@ import (
 	"sync"
 
 	"github.com/go-redis/redis"
-
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 	"github.com/jmoiron/sqlx"
+	"github.com/patrickmn/go-cache"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"sync"
+	"time"
 )
 
 var (
@@ -24,7 +31,8 @@ var (
 
 	roomDataTimeStore *redis.Client
 	roomTimeLock      sync.Mutex
-
+  
+	itemCache *cache.Cache
 	serverIPs = []string{
 		"163.43.29.7",
 		"163.43.28.43",
@@ -144,6 +152,9 @@ func main() {
 	})
 	pong, err := roomDataTimeStore.Ping().Result()
 	fmt.Println(pong, err)
+
+	// init cache
+	itemCache = cache.New(5*time.Minute, 10*time.Minute)
 
 	r := mux.NewRouter()
 	r.HandleFunc("/initialize", getInitializeHandler)
