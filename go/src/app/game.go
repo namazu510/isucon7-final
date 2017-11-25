@@ -8,10 +8,27 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-redis/redis"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/websocket"
 	"github.com/jmoiron/sqlx"
 )
+
+var (
+	AddingStore *redis.Client
+)
+
+func init() {
+	AddingStore = redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
+	_, err := AddingStore.Ping().Result()
+	if err != nil {
+		log.Panicln(err)
+	}
+}
 
 type GameRequest struct {
 	RequestID int    `json:"request_id"`
@@ -202,6 +219,10 @@ func updateRoomTime(tx *sqlx.Tx, roomName string, reqTime int64) (int64, bool) {
 	return currentTime, true
 }
 
+func getAddingStoreKey(adding *Adding) string {
+	return fmt.Sprintf("%s:%d", adding.RoomName, adding.Time)
+}
+
 func addIsu(roomName string, reqIsu *big.Int, reqTime int64) bool {
 	tx, err := db.Beginx()
 	if err != nil {
@@ -215,25 +236,44 @@ func addIsu(roomName string, reqIsu *big.Int, reqTime int64) bool {
 		return false
 	}
 
-	_, err = tx.Exec("INSERT INTO adding(room_name, time, isu) VALUES (?, ?, '0') ON DUPLICATE KEY UPDATE isu=isu", roomName, reqTime)
-	if err != nil {
+	//_, err = tx.Exec("INSERT INTO adding(room_name, time, isu) VALUES (?, ?, '0') ON DUPLICATE KEY UPDATE isu=isu", roomName, reqTime)
+	adding := &Adding{
+		RoomName: roomName,
+		Time:     reqTime,
+		Isu:      fmt.Sprintf("%d", reqIsu),
+	}
+	stat := AddingStore.Set(getAddingStoreKey(adding), adding, 0)
+	if stat.Err() != nil {
 		log.Println(err)
 		tx.Rollback()
 		return false
 	}
 
-	var isuStr string
-	err = tx.QueryRow("SELECT isu FROM adding WHERE room_name = ? AND time = ? FOR UPDATE", roomName, reqTime).Scan(&isuStr)
-	if err != nil {
+	//err = tx.QueryRow("SELECT isu FROM adding WHERE room_name = ? AND time = ? FOR UPDATE", ).Scan(&isuStr)
+	var isu2 Adding
+	result := AddingStore.Get(getAddingStoreKey(&Adding{
+		RoomName: roomName,
+		Time:     reqTime,
+	}))
+	if result.Err() != nil {
 		log.Println(err)
 		tx.Rollback()
 		return false
 	}
-	isu := str2big(isuStr)
+	if err := result.Scan(&isu2); err != nil {
+		log.Panicln(err)
+	}
+	isu := str2big(isu2.Isu)
 
 	isu.Add(isu, reqIsu)
-	_, err = tx.Exec("UPDATE adding SET isu = ? WHERE room_name = ? AND time = ?", isu.String(), roomName, reqTime)
-	if err != nil {
+
+	//_, err = tx.Exec("UPDATE adding SET isu = ? WHERE room_name = ? AND time = ?", isu.String(), roomName, reqTime)
+	newIsu := &Adding{
+		RoomName: roomName,
+		Time:     reqTime,
+	}
+	result2 := AddingStore.Set(getAddingStoreKey(newIsu), newIsu, 0)
+	if result2.Err() != nil {
 		log.Println(err)
 		tx.Rollback()
 		return false
