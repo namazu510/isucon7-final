@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-redis/redis"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/websocket"
 	"github.com/jmoiron/sqlx"
@@ -161,45 +162,57 @@ func getCurrentTime() (int64, error) {
 // トランザクション開始後この関数を呼ぶ前にクエリを投げると、
 // そのトランザクション中の通常のSELECTクエリが返す結果がロック取得前の
 // 状態になることに注意 (keyword: MVCC, repeatable read).
-func updateRoomTime(tx *sqlx.Tx, roomName string, reqTime int64) (int64, bool) {
-	// See page 13 and 17 in https://www.slideshare.net/ichirin2501/insert-51938787
-	_, err := tx.Exec("INSERT INTO room_time(room_name, time) VALUES (?, 0) ON DUPLICATE KEY UPDATE time = time", roomName)
-	if err != nil {
-		log.Println(err)
-		return 0, false
+func updateRoomTime(tx *sqlx.Tx, roomName string, reqTime int64) (int64, bool, func()) {
+	room := time.Now().UnixNano() / 1000 / 1000
+	current := room
+
+	// roomTimeLock.Lock()
+	// defer roomTimeLock.Unlock()
+	val, err := roomDataTimeStore.Get(roomName).Result()
+	if err == redis.Nil {
+		// OK!
+	} else if err != nil {
+		panic(err)
 	}
 
-	var roomTime int64
-	err = tx.Get(&roomTime, "SELECT time FROM room_time WHERE room_name = ? FOR UPDATE", roomName)
-	if err != nil {
-		log.Println(err)
-		return 0, false
-	}
-
-	var currentTime int64
-	err = tx.Get(&currentTime, "SELECT floor(unix_timestamp(current_timestamp(3))*1000)")
-	if err != nil {
-		log.Println(err)
-		return 0, false
-	}
-	if roomTime > currentTime {
-		log.Println("room time is future")
-		return 0, false
-	}
-	if reqTime != 0 {
-		if reqTime < currentTime {
-			log.Println("reqTime is past")
-			return 0, false
+	if err == nil {
+		room, err = strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			panic(err)
 		}
 	}
 
-	_, err = tx.Exec("UPDATE room_time SET time = ? WHERE room_name = ?", currentTime, roomName)
-	if err != nil {
-		log.Println(err)
-		return 0, false
+	if room > current {
+		log.Println("room time is future")
+		return 0, false, func() {}
+	}
+	if reqTime != 0 {
+		if reqTime < current {
+			log.Println("reqTime is past")
+			return 0, false, func() {}
+		}
 	}
 
-	return currentTime, true
+	// トランザクション失敗時に戻せるようにこのターンのroomTimeを保持させる
+	var beforeTime int64
+	result := roomDataTimeStore.GetSet(roomName, strconv.FormatInt(current, 10))
+	if result.Err() == redis.Nil {
+		// ok
+		beforeTime = current
+	} else if result.Err() != nil {
+		panic(err)
+	}
+	result.Scan(&beforeTime)
+
+	// この関数は、ロールバックされたときに呼び出される。
+	rollbackFunc := func() {
+		err := roomDataTimeStore.Set(roomName, strconv.FormatInt(beforeTime, 10), 0).Err()
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	return current, true, rollbackFunc
 }
 
 func addIsu(roomName string, reqIsu *big.Int, reqTime int64) bool {
@@ -209,9 +222,9 @@ func addIsu(roomName string, reqIsu *big.Int, reqTime int64) bool {
 		return false
 	}
 
-	_, ok := updateRoomTime(tx, roomName, reqTime)
+	_, ok, rollback := updateRoomTime(tx, roomName, reqTime)
 	if !ok {
-		tx.Rollback()
+		rollback()
 		return false
 	}
 
@@ -253,9 +266,9 @@ func buyItem(roomName string, itemID int, countBought int, reqTime int64) bool {
 		return false
 	}
 
-	_, ok := updateRoomTime(tx, roomName, reqTime)
+	_, ok, rollback := updateRoomTime(tx, roomName, reqTime)
 	if !ok {
-		tx.Rollback()
+		rollback()
 		return false
 	}
 
@@ -333,9 +346,9 @@ func getStatus(roomName string) (*GameStatus, error) {
 		return nil, err
 	}
 
-	currentTime, ok := updateRoomTime(tx, roomName, 0)
+	currentTime, ok, rollback := updateRoomTime(tx, roomName, 0)
 	if !ok {
-		tx.Rollback()
+		rollback()
 		return nil, fmt.Errorf("updateRoomTime failure")
 	}
 
