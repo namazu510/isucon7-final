@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -12,18 +11,19 @@ import (
 
 	"sync"
 
-	"github.com/go-redis/redis"
-	"github.com/gorilla/handlers"
-	"github.com/gorilla/mux"
-	"github.com/gorilla/websocket"
-	"github.com/jmoiron/sqlx"
-	"github.com/patrickmn/go-cache"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/go-redis/redis"
+	"github.com/gorilla/handlers"
+	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
+	"github.com/jmoiron/sqlx"
+	"github.com/patrickmn/go-cache"
 )
 
 var (
@@ -31,7 +31,7 @@ var (
 
 	roomDataTimeStore *redis.Client
 	roomTimeLock      sync.Mutex
-  
+
 	itemCache *cache.Cache
 	serverIPs = []string{
 		"163.43.29.7",
