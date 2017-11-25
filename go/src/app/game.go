@@ -164,6 +164,7 @@ func getCurrentTime() (int64, error) {
 // 状態になることに注意 (keyword: MVCC, repeatable read).
 func updateRoomTime(tx *sqlx.Tx, roomName string, reqTime int64) (int64, bool, func()) {
 	room := time.Now().UnixNano() / 1000
+	room := time.Now().UnixNano() / 1000 / 1000
 	current := room
 
 	roomTimeLock.Lock()
@@ -196,7 +197,10 @@ func updateRoomTime(tx *sqlx.Tx, roomName string, reqTime int64) (int64, bool, f
 	// トランザクション失敗時に戻せるようにこのターンのroomTimeを保持させる
 	var beforeTime int64
 	result := roomDataTimeStore.GetSet(roomName, strconv.FormatInt(current, 10))
-	if result.Err() != nil {
+	if result.Err() == redis.Nil {
+		// ok
+		beforeTime = current
+	} else if result.Err() != nil {
 		panic(err)
 	}
 	result.Scan(&beforeTime)
