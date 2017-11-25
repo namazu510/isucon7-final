@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -12,13 +13,17 @@ import (
 	"sync"
 
 	"github.com/go-redis/redis"
-
-	"crypto/sha256"
-
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 	"github.com/jmoiron/sqlx"
+	"github.com/patrickmn/go-cache"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"sync"
+	"time"
 )
 
 var (
@@ -26,13 +31,18 @@ var (
 
 	roomDataTimeStore *redis.Client
 	roomTimeLock      sync.Mutex
-
+  
+	itemCache *cache.Cache
 	serverIPs = []string{
 		"163.43.29.7",
 		"163.43.28.43",
 		"153.125.224.115",
 		"59.106.219.167",
 	}
+
+	knownRoomNameLock sync.Mutex
+	knownRoomName     = map[string]int{}
+	nextServerID      int
 )
 
 func initDB() {
@@ -93,10 +103,17 @@ func getRoomHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 
 	roomName := vars["room_name"]
-	var hashValue int
-	for _, byte := range sha256.Sum256([]byte(roomName)) {
-		hashValue += int(byte)
+
+	// ラウンドロビンで振り分ける
+	knownRoomNameLock.Lock()
+	hashValue, ok := knownRoomName[roomName]
+	if !ok {
+		nextServerID = (nextServerID + 1) % len(serverIPs)
+		knownRoomName[roomName] = nextServerID
+		hashValue = nextServerID
 	}
+	knownRoomNameLock.Unlock()
+
 	host := serverIPs[hashValue%len(serverIPs)]
 	path := "/ws/" + url.PathEscape(roomName)
 
@@ -135,6 +152,9 @@ func main() {
 	})
 	pong, err := roomDataTimeStore.Ping().Result()
 	fmt.Println(pong, err)
+
+	// init cache
+	itemCache = cache.New(5*time.Minute, 10*time.Minute)
 
 	r := mux.NewRouter()
 	r.HandleFunc("/initialize", getInitializeHandler)
