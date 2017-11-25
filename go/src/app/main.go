@@ -7,14 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"time"
-
-	"sync"
-
-	"log"
-	"net/http"
-	"net/url"
-	"os"
 	"sync"
 	"time"
 
