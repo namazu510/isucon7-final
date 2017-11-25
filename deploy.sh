@@ -36,4 +36,6 @@ else
     remote_run ./build.sh
 fi
 
+remote_run ./flushdb.sh
+
 remote_run sudo systemctl restart "${services[@]}"
