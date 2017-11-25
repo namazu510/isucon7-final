@@ -10,7 +10,6 @@ servers=(
 remote_run() {
     for srv in "${servers[@]}"; do
         echo "
-        set -euvx
         . ~/.bashrc
         $@
         " | ssh "$srv"
