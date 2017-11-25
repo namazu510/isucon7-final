@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"crypto/sha256"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
@@ -17,6 +18,13 @@ import (
 
 var (
 	db *sqlx.DB
+
+	serverIPs = []string{
+		"192.168.23.1",
+		"192.168.23.2",
+		"192.168.23.3",
+		"192.168.23.4",
+	}
 )
 
 func initDB() {
@@ -67,6 +75,11 @@ func getRoomHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 
 	roomName := vars["room_name"]
+	var hashValue int
+	for _, byte := range sha256.Sum256([]byte(roomName)) {
+		hashValue += int(byte)
+	}
+	host := serverIPs[hashValue%len(serverIPs)]
 	path := "/ws/" + url.PathEscape(roomName)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -74,7 +87,7 @@ func getRoomHandler(w http.ResponseWriter, r *http.Request) {
 		Host string `json:"host"`
 		Path string `json:"path"`
 	}{
-		Host: "",
+		Host: host,
 		Path: path,
 	})
 }
