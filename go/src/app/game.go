@@ -651,6 +651,7 @@ func serveGameConn(ws *websocket.Conn, roomName string) {
 					return
 				}
 			} else {
+				log.Println("rollbacked")
 				rollback()
 			}
 
