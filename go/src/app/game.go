@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	"encoding/json"
+
 	"github.com/go-redis/redis"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/websocket"
@@ -60,9 +62,16 @@ func (n Exponential) MarshalJSON() ([]byte, error) {
 }
 
 type Adding struct {
-	RoomName string `json:"-" db:"room_name"`
+	RoomName string `json:"room_name" db:"room_name"`
 	Time     int64  `json:"time" db:"time"`
 	Isu      string `json:"isu" db:"isu"`
+}
+
+func (a *Adding) MarshalBinary() (data []byte, err error) {
+	return json.Marshal(a)
+}
+func (a *Adding) UnmarshalBinary(data []byte) error {
+	return json.Unmarshal(data, a)
 }
 
 type Buying struct {
@@ -223,6 +232,10 @@ func getAddingStoreKey(adding *Adding) string {
 	return fmt.Sprintf("%s:%d", adding.RoomName, adding.Time)
 }
 
+func getAddingStoreKeyByRoomName(roomName string) string {
+	return fmt.Sprintf("%s:%s", roomName, "*")
+}
+
 func addIsu(roomName string, reqIsu *big.Int, reqTime int64) (bool, func()) {
 	tx, err := db.Beginx()
 	if err != nil {
@@ -274,6 +287,7 @@ func addIsu(roomName string, reqIsu *big.Int, reqTime int64) (bool, func()) {
 	newIsu := &Adding{
 		RoomName: roomName,
 		Time:     reqTime,
+		Isu:      fmt.Sprintf("%d", reqIsu),
 	}
 	result2 := AddingStore.Set(getAddingStoreKey(newIsu), newIsu, 0)
 	if result2.Err() != nil {
@@ -393,10 +407,30 @@ func getStatus(roomName string) (*GameStatus, error) {
 	}
 
 	addings := []Adding{}
-	err = tx.Select(&addings, "SELECT time, isu FROM adding WHERE room_name = ?", roomName)
-	if err != nil {
-		tx.Rollback()
-		return nil, err
+	//err = tx.Select(&addings, "SELECT time, isu FROM adding WHERE room_name = ?", roomName)
+	addingKeysResult := AddingStore.Keys(getAddingStoreKeyByRoomName(roomName))
+	if addingKeysResult.Err() != nil {
+		log.Println(addingKeysResult.Err())
+		return nil, addingKeysResult.Err()
+	}
+	addingKeys := addingKeysResult.Val()
+	if len(addingKeys) > 0 {
+		result := AddingStore.MGet(addingKeys...)
+		if result.Err() != nil {
+			log.Println(result.Err())
+			tx.Rollback()
+			return nil, result.Err()
+		}
+		for _, val := range result.Val() {
+			var a Adding
+			js := []byte(val.(string))
+			log.Println("js: ", val.(string))
+			if err := json.Unmarshal(js, &a); err != nil {
+				log.Panicln(err)
+			}
+			log.Printf("item: %+v", a)
+			addings = append(addings, a)
+		}
 	}
 
 	buyings := []Buying{}
