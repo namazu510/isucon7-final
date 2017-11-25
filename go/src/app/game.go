@@ -223,17 +223,20 @@ func getAddingStoreKey(adding *Adding) string {
 	return fmt.Sprintf("%s:%d", adding.RoomName, adding.Time)
 }
 
-func addIsu(roomName string, reqIsu *big.Int, reqTime int64) bool {
+func addIsu(roomName string, reqIsu *big.Int, reqTime int64) (bool, func()) {
 	tx, err := db.Beginx()
 	if err != nil {
 		log.Println(err)
-		return false
+		return false, func() {}
 	}
+	// dbのコネクションを食いつぶしそうだから、rollback。
+	// この関数内で呼び出している関数が、txに依存しなくなったら削除してよい。
+	defer tx.Rollback()
 
 	_, ok := updateRoomTime(tx, roomName, reqTime)
 	if !ok {
 		tx.Rollback()
-		return false
+		return false, func() {}
 	}
 
 	//_, err = tx.Exec("INSERT INTO adding(room_name, time, isu) VALUES (?, ?, '0') ON DUPLICATE KEY UPDATE isu=isu", roomName, reqTime)
@@ -245,8 +248,7 @@ func addIsu(roomName string, reqIsu *big.Int, reqTime int64) bool {
 	stat := AddingStore.Set(getAddingStoreKey(adding), adding, 0)
 	if stat.Err() != nil {
 		log.Println(err)
-		tx.Rollback()
-		return false
+		return false, func() {}
 	}
 
 	//err = tx.QueryRow("SELECT isu FROM adding WHERE room_name = ? AND time = ? FOR UPDATE", ).Scan(&isuStr)
@@ -257,8 +259,9 @@ func addIsu(roomName string, reqIsu *big.Int, reqTime int64) bool {
 	}))
 	if result.Err() != nil {
 		log.Println(err)
-		tx.Rollback()
-		return false
+		return false, func() {
+			AddingStore.Del(getAddingStoreKey(adding))
+		}
 	}
 	if err := result.Scan(&isu2); err != nil {
 		log.Panicln(err)
@@ -275,15 +278,14 @@ func addIsu(roomName string, reqIsu *big.Int, reqTime int64) bool {
 	result2 := AddingStore.Set(getAddingStoreKey(newIsu), newIsu, 0)
 	if result2.Err() != nil {
 		log.Println(err)
-		tx.Rollback()
-		return false
+		return false, func() {
+			AddingStore.Del(getAddingStoreKey(adding))
+		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		log.Println(err)
-		return false
+	return true, func() {
+		AddingStore.Del(getAddingStoreKey(adding))
 	}
-	return true
 }
 
 func buyItem(roomName string, itemID int, countBought int, reqTime int64) bool {
@@ -621,12 +623,13 @@ func serveGameConn(ws *websocket.Conn, roomName string) {
 	for {
 		select {
 		case req := <-chReq:
+			var rollback func()
 			log.Println(req)
 
 			success := false
 			switch req.Action {
 			case "addIsu":
-				success = addIsu(roomName, str2big(req.Isu), req.Time)
+				success, rollback = addIsu(roomName, str2big(req.Isu), req.Time)
 			case "buyItem":
 				success = buyItem(roomName, req.ItemID, req.CountBought, req.Time)
 			default:
@@ -647,6 +650,8 @@ func serveGameConn(ws *websocket.Conn, roomName string) {
 					log.Println(err)
 					return
 				}
+			} else {
+				rollback()
 			}
 
 			err := ws.WriteJSON(GameResponse{
