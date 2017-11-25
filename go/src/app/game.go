@@ -445,11 +445,9 @@ func getStatus(roomName string) (*GameStatus, error) {
 		for _, val := range result.Val() {
 			var a Adding
 			js := []byte(val.(string))
-			log.Println("js: ", val.(string))
 			if err := json.Unmarshal(js, &a); err != nil {
 				log.Panicln(err)
 			}
-			log.Printf("item: %+v", a)
 			addings = append(addings, a)
 		}
 	}
