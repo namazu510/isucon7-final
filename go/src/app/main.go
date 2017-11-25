@@ -4,6 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"time"
+
+	"sync"
+
 	"github.com/go-redis/redis"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
@@ -31,6 +39,10 @@ var (
 		"153.125.224.115",
 		"59.106.219.167",
 	}
+
+	knownRoomNameLock sync.Mutex
+	knownRoomName     = map[string]int{}
+	nextServerID      int
 )
 
 func initDB() {
@@ -72,7 +84,7 @@ func initDB() {
 
 func resetRedis() {
 	err := roomDataTimeStore.Del("*").Err()
-	if (err != nil) {
+	if err != nil {
 		panic(err)
 	}
 }
@@ -91,10 +103,17 @@ func getRoomHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 
 	roomName := vars["room_name"]
-	var hashValue int
-	for _, byte := range sha256.Sum256([]byte(roomName)) {
-		hashValue += int(byte)
+
+	// ラウンドロビンで振り分ける
+	knownRoomNameLock.Lock()
+	hashValue, ok := knownRoomName[roomName]
+	if !ok {
+		nextServerID = (nextServerID + 1) % len(serverIPs)
+		knownRoomName[roomName] = nextServerID
+		hashValue = nextServerID
 	}
+	knownRoomNameLock.Unlock()
+
 	host := serverIPs[hashValue%len(serverIPs)]
 	path := "/ws/" + url.PathEscape(roomName)
 
