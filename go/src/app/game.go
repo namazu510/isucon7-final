@@ -8,12 +8,30 @@ import (
 	"strconv"
 	"time"
 
+	"encoding/json"
+
 	"github.com/go-redis/redis"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/websocket"
 	"github.com/jmoiron/sqlx"
 	"github.com/patrickmn/go-cache"
 )
+
+var (
+	AddingStore *redis.Client
+)
+
+func init() {
+	AddingStore = redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password set
+		DB:       1,  // use default DB
+	})
+	_, err := AddingStore.Ping().Result()
+	if err != nil {
+		log.Panicln(err)
+	}
+}
 
 type GameRequest struct {
 	RequestID int    `json:"request_id"`
@@ -45,9 +63,16 @@ func (n Exponential) MarshalJSON() ([]byte, error) {
 }
 
 type Adding struct {
-	RoomName string `json:"-" db:"room_name"`
+	RoomName string `json:"room_name" db:"room_name"`
 	Time     int64  `json:"time" db:"time"`
 	Isu      string `json:"isu" db:"isu"`
+}
+
+func (a *Adding) MarshalBinary() (data []byte, err error) {
+	return json.Marshal(a)
+}
+func (a *Adding) UnmarshalBinary(data []byte) error {
+	return json.Unmarshal(data, a)
 }
 
 type Buying struct {
@@ -189,7 +214,7 @@ func updateRoomTime(tx *sqlx.Tx, roomName string, reqTime int64) (int64, bool, f
 	}
 	if reqTime != 0 {
 		if reqTime < current {
-			log.Println("reqTime is past")
+			log.Println("reqTime is past: reqTime=", reqTime, " currentTime=", current)
 			return 0, false, func() {}
 		}
 	}
@@ -216,48 +241,87 @@ func updateRoomTime(tx *sqlx.Tx, roomName string, reqTime int64) (int64, bool, f
 	return current, true, rollbackFunc
 }
 
-func addIsu(roomName string, reqIsu *big.Int, reqTime int64) bool {
+func getAddingStoreKey(adding *Adding) string {
+	return fmt.Sprintf("%s:%d", adding.RoomName, adding.Time)
+}
+
+func getAddingStoreKeyByRoomName(roomName string) string {
+	return fmt.Sprintf("%s:%s", roomName, "*")
+}
+
+func addIsu(roomName string, reqIsu *big.Int, reqTime int64) (bool, func()) {
 	tx, err := db.Beginx()
 	if err != nil {
 		log.Println(err)
-		return false
+		return false, func() {
+			log.Println("failed: db.Beginx(): " + err.Error())
+		}
 	}
+	// dbのコネクションを食いつぶしそうだから、rollback。
+	// この関数内で呼び出している関数が、txに依存しなくなったら削除してよい。
+	defer tx.Rollback()
 
 	_, ok, rollback := updateRoomTime(tx, roomName, reqTime)
 	if !ok {
 		rollback()
-		return false
+		return false, func() {
+			log.Println("failed: updateRoomTime()")
+		}
 	}
 
-	_, err = tx.Exec("INSERT INTO adding(room_name, time, isu) VALUES (?, ?, '0') ON DUPLICATE KEY UPDATE isu=isu", roomName, reqTime)
-	if err != nil {
+	//_, err = tx.Exec("INSERT INTO adding(room_name, time, isu) VALUES (?, ?, '0') ON DUPLICATE KEY UPDATE isu=isu", roomName, reqTime)
+	adding := &Adding{
+		RoomName: roomName,
+		Time:     reqTime,
+		Isu:      fmt.Sprintf("%d", reqIsu),
+	}
+	stat := AddingStore.Set(getAddingStoreKey(adding), adding, 0)
+	if err := stat.Err(); err != nil {
 		log.Println(err)
-		tx.Rollback()
-		return false
+		return false, func() {
+			log.Println("failed: Set(): " + err.Error())
+		}
 	}
 
-	var isuStr string
-	err = tx.QueryRow("SELECT isu FROM adding WHERE room_name = ? AND time = ? FOR UPDATE", roomName, reqTime).Scan(&isuStr)
-	if err != nil {
+	//err = tx.QueryRow("SELECT isu FROM adding WHERE room_name = ? AND time = ? FOR UPDATE", ).Scan(&isuStr)
+	var isu2 Adding
+	result := AddingStore.Get(getAddingStoreKey(&Adding{
+		RoomName: roomName,
+		Time:     reqTime,
+	}))
+	if err := result.Err(); err != nil {
 		log.Println(err)
-		tx.Rollback()
-		return false
+		return false, func() {
+			log.Println("failed: Get(): " + err.Error())
+			AddingStore.Del(getAddingStoreKey(adding))
+		}
 	}
-	isu := str2big(isuStr)
+	if err := result.Scan(&isu2); err != nil {
+		log.Panicln(err)
+	}
+	isu := str2big(isu2.Isu)
 
 	isu.Add(isu, reqIsu)
-	_, err = tx.Exec("UPDATE adding SET isu = ? WHERE room_name = ? AND time = ?", isu.String(), roomName, reqTime)
-	if err != nil {
+
+	//_, err = tx.Exec("UPDATE adding SET isu = ? WHERE room_name = ? AND time = ?", isu.String(), roomName, reqTime)
+	newIsu := &Adding{
+		RoomName: roomName,
+		Time:     reqTime,
+		Isu:      fmt.Sprintf("%d", reqIsu),
+	}
+	result2 := AddingStore.Set(getAddingStoreKey(newIsu), newIsu, 0)
+	if err := result2.Err(); err != nil {
 		log.Println(err)
-		tx.Rollback()
-		return false
+		return false, func() {
+			log.Println("failed: Set(): " + err.Error())
+			AddingStore.Del(getAddingStoreKey(adding))
+		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		log.Println(err)
-		return false
+	return true, func() {
+		log.Println("failed: unknwon")
+		AddingStore.Del(getAddingStoreKey(adding))
 	}
-	return true
 }
 
 func buyItem(roomName string, itemID int, countBought int, reqTime int64) bool {
@@ -392,10 +456,28 @@ func getStatus(roomName string) (*GameStatus, error) {
 	}
 
 	addings := []Adding{}
-	err = tx.Select(&addings, "SELECT time, isu FROM adding WHERE room_name = ?", roomName)
-	if err != nil {
-		tx.Rollback()
-		return nil, err
+	//err = tx.Select(&addings, "SELECT time, isu FROM adding WHERE room_name = ?", roomName)
+	addingKeysResult := AddingStore.Keys(getAddingStoreKeyByRoomName(roomName))
+	if addingKeysResult.Err() != nil {
+		log.Println(addingKeysResult.Err())
+		return nil, addingKeysResult.Err()
+	}
+	addingKeys := addingKeysResult.Val()
+	if len(addingKeys) > 0 {
+		result := AddingStore.MGet(addingKeys...)
+		if result.Err() != nil {
+			log.Println(result.Err())
+			tx.Rollback()
+			return nil, result.Err()
+		}
+		for _, val := range result.Val() {
+			var a Adding
+			js := []byte(val.(string))
+			if err := json.Unmarshal(js, &a); err != nil {
+				log.Panicln(err)
+			}
+			addings = append(addings, a)
+		}
 	}
 
 	buyings := []Buying{}
@@ -622,12 +704,13 @@ func serveGameConn(ws *websocket.Conn, roomName string) {
 	for {
 		select {
 		case req := <-chReq:
+			var rollback func()
 			log.Println(req)
 
 			success := false
 			switch req.Action {
 			case "addIsu":
-				success = addIsu(roomName, str2big(req.Isu), req.Time)
+				success, rollback = addIsu(roomName, str2big(req.Isu), req.Time)
 			case "buyItem":
 				success = buyItem(roomName, req.ItemID, req.CountBought, req.Time)
 			default:
@@ -648,6 +731,9 @@ func serveGameConn(ws *websocket.Conn, roomName string) {
 					log.Println(err)
 					return
 				}
+			} else {
+				log.Println("rollbacked")
+				rollback()
 			}
 
 			err := ws.WriteJSON(GameResponse{
